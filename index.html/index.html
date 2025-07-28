@@ -4,18 +4,667 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>מטרונום מסונכרן למוזיקאים</title>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <meta name="description" content="מטרונום מקצועי עם סינכרון אלחוטי למוזיקאים">
+    
+    <!-- React and dependencies -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tone.js for audio -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    
+    <!-- Lucide icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PWA support -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#7c3aed">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
     <style>
-        /* Tailwind CSS CDN */
-        @import url('https://cdn.tailwindcss.com');
+        /* Custom styles for better mobile experience */
+        body {
+            overscroll-behavior: none;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        /* Hide address bar on mobile */
+        @media (max-width: 768px) {
+            html {
+                height: 100vh;
+                height: -webkit-fill-available;
+            }
+            body {
+                min-height: 100vh;
+                min-height: -webkit-fill-available;
+            }
+        }
+        
+        /* Custom range slider styles */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #8b5cf6;
+            cursor: pointer;
+            border: 2px solid #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #8b5cf6;
+            cursor: pointer;
+            border: 2px solid #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
     </style>
 </head>
-<body>
+<body class="bg-slate-900">
     <div id="root"></div>
-    <script type="text/babel" src="app.js"></script>
+    
+    <!-- Main application script -->
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const { Play, Pause, Volume2, Settings, Users, Wifi, WifiOff, Copy, Clock } = lucide;
+
+        const SyncStartMetronome = () => {
+          const [bpm, setBpm] = useState(120);
+          const [isPlaying, setIsPlaying] = useState(false);
+          const [currentBeat, setCurrentBeat] = useState(0);
+          const [timeSignature, setTimeSignature] = useState({ beats: 4, noteValue: 4 });
+          const [volume, setVolume] = useState(-12);
+          const [accentFirst, setAccentFirst] = useState(true);
+          const [showSettings, setShowSettings] = useState(false);
+          
+          // Sync state
+          const [roomCode, setRoomCode] = useState('');
+          const [isHost, setIsHost] = useState(false);
+          const [isConnected, setIsConnected] = useState(false);
+          const [connectedPeers, setConnectedPeers] = useState([]);
+          const [showRoomPanel, setShowRoomPanel] = useState(false);
+          const [joinRoomCode, setJoinRoomCode] = useState('');
+          const [syncCountdown, setSyncCountdown] = useState(0);
+          const [playerName, setPlayerName] = useState(`מוזיקאי-${Math.floor(Math.random() * 1000)}`);
+          const [isWaitingForStart, setIsWaitingForStart] = useState(false);
+          const [sharedSettings, setSharedSettings] = useState(null);
+          
+          const synthRef = useRef(null);
+          const loopRef = useRef(null);
+          const beatCountRef = useRef(0);
+          const startTimeRef = useRef(null);
+
+          // Initialize audio
+          useEffect(() => {
+            const initAudio = async () => {
+              // Wait for user interaction before starting audio context
+              const startAudioContext = async () => {
+                if (Tone.context.state !== 'running') {
+                  await Tone.start();
+                }
+                
+                synthRef.current = new Tone.Synth({
+                  oscillator: { type: "square" },
+                  envelope: { attack: 0.001, decay: 0.1, sustain: 0, release: 0.1 }
+                }).toDestination();
+                
+                synthRef.current.volume.value = volume;
+              };
+              
+              // Add click listener to start audio on first interaction
+              document.addEventListener('click', startAudioContext, { once: true });
+              document.addEventListener('touchstart', startAudioContext, { once: true });
+            };
+            
+            initAudio();
+            
+            return () => {
+              cleanup();
+            };
+          }, []);
+
+          const cleanup = () => {
+            if (loopRef.current) {
+              loopRef.current.dispose();
+            }
+            if (synthRef.current) {
+              synthRef.current.dispose();
+            }
+          };
+
+          useEffect(() => {
+            if (synthRef.current) {
+              synthRef.current.volume.value = volume;
+            }
+          }, [volume]);
+
+          // Connection functions
+          const createRoom = () => {
+            const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+            setRoomCode(code);
+            setIsHost(true);
+            setIsConnected(true);
+            setShowRoomPanel(true);
+            setSharedSettings({ bpm, timeSignature });
+          };
+
+          const joinRoom = (code) => {
+            if (!code) return;
+            
+            setRoomCode(code);
+            setIsHost(false);
+            setIsConnected(true);
+            setShowRoomPanel(true);
+            setJoinRoomCode('');
+            
+            // Simulate receiving settings from host
+            setTimeout(() => {
+              const hostSettings = { bpm: 120, timeSignature: { beats: 4, noteValue: 4 } };
+              setSharedSettings(hostSettings);
+              setBpm(hostSettings.bpm);
+              setTimeSignature(hostSettings.timeSignature);
+              setConnectedPeers([{ id: 'host', name: 'מנהיג להקה' }]);
+            }, 500);
+          };
+
+          const leaveRoom = () => {
+            setRoomCode('');
+            setIsHost(false);
+            setIsConnected(false);
+            setConnectedPeers([]);
+            setShowRoomPanel(false);
+            setIsWaitingForStart(false);
+            setSharedSettings(null);
+            
+            if (isPlaying) {
+              stopMetronome();
+            }
+          };
+
+          const broadcastSyncStart = () => {
+            if (!isHost) return;
+            
+            const startTime = Date.now() + 5000; // 5 seconds from now
+            startTimeRef.current = startTime;
+            
+            performSyncStart(startTime);
+          };
+
+          const performSyncStart = (startTime) => {
+            setIsWaitingForStart(true);
+            
+            const countdownInterval = setInterval(() => {
+              const remaining = Math.ceil((startTime - Date.now()) / 1000);
+              setSyncCountdown(remaining);
+              
+              if (remaining <= 0) {
+                clearInterval(countdownInterval);
+                setSyncCountdown(0);
+                setIsWaitingForStart(false);
+                startMetronomeAtTime(startTime);
+              } else if (remaining <= 3) {
+                // Play countdown clicks for last 3 seconds
+                playClick(1);
+              }
+            }, 100);
+          };
+
+          const startMetronomeAtTime = async (targetTime) => {
+            if (Tone.context.state !== 'running') {
+              await Tone.start();
+            }
+
+            const now = Date.now();
+            const delay = Math.max(0, targetTime - now);
+            
+            setTimeout(() => {
+              beatCountRef.current = 0;
+              
+              loopRef.current = new Tone.Loop((time) => {
+                beatCountRef.current = (beatCountRef.current % timeSignature.beats) + 1;
+                
+                Tone.Draw.schedule(() => {
+                  setCurrentBeat(beatCountRef.current);
+                }, time);
+                
+                playClick(beatCountRef.current);
+              }, `${60/bpm}s`);
+              
+              loopRef.current.start();
+              Tone.Transport.start();
+              setIsPlaying(true);
+            }, delay);
+          };
+
+          const stopAllMetronomes = () => {
+            if (!isHost) return;
+            stopMetronome();
+          };
+
+          const playClick = (beat) => {
+            if (synthRef.current) {
+              const note = (accentFirst && beat === 1) ? "C6" : "C5";
+              synthRef.current.triggerAttackRelease(note, "16n");
+            }
+          };
+
+          const startMetronome = async () => {
+            if (Tone.context.state !== 'running') {
+              await Tone.start();
+            }
+
+            beatCountRef.current = 0;
+            
+            loopRef.current = new Tone.Loop((time) => {
+              beatCountRef.current = (beatCountRef.current % timeSignature.beats) + 1;
+              
+              Tone.Draw.schedule(() => {
+                setCurrentBeat(beatCountRef.current);
+              }, time);
+              
+              playClick(beatCountRef.current);
+            }, `${60/bpm}s`);
+            
+            loopRef.current.start();
+            Tone.Transport.start();
+            setIsPlaying(true);
+          };
+
+          const stopMetronome = () => {
+            if (loopRef.current) {
+              loopRef.current.stop();
+              loopRef.current.dispose();
+              loopRef.current = null;
+            }
+            Tone.Transport.stop();
+            setIsPlaying(false);
+            setCurrentBeat(0);
+            beatCountRef.current = 0;
+            setIsWaitingForStart(false);
+          };
+
+          const handlePlayPause = () => {
+            if (isConnected && isHost) {
+              if (isPlaying || isWaitingForStart) {
+                stopAllMetronomes();
+              } else {
+                broadcastSyncStart();
+              }
+            } else if (!isConnected) {
+              if (isPlaying) {
+                stopMetronome();
+              } else {
+                startMetronome();
+              }
+            }
+          };
+
+          const adjustBpm = (change) => {
+            if (isConnected && !isHost) return;
+            
+            const newBpm = Math.max(40, Math.min(300, bpm + change));
+            setBpm(newBpm);
+            
+            if (isHost && isConnected) {
+              setSharedSettings(prev => ({ ...prev, bpm: newBpm }));
+            }
+          };
+
+          const copyRoomCode = async () => {
+            try {
+              await navigator.clipboard.writeText(roomCode);
+              // Could add a toast notification here
+            } catch (err) {
+              // Fallback for older browsers
+              const textArea = document.createElement('textarea');
+              textArea.value = roomCode;
+              document.body.appendChild(textArea);
+              textArea.select();
+              document.execCommand('copy');
+              document.body.removeChild(textArea);
+            }
+          };
+
+          const getCurrentSettings = () => {
+            return isConnected && sharedSettings ? sharedSettings : { bpm, timeSignature };
+          };
+
+          const currentSettings = getCurrentSettings();
+
+          return React.createElement('div', {
+            className: "min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4"
+          }, 
+            React.createElement('div', {
+              className: "bg-white/10 backdrop-blur-lg rounded-3xl p-8 w-full max-w-md shadow-2xl border border-white/20"
+            }, [
+              // Header
+              React.createElement('div', {
+                key: 'header',
+                className: "text-center mb-6"
+              }, [
+                React.createElement('h1', {
+                  key: 'title',
+                  className: "text-3xl font-bold text-white mb-2"
+                }, 'מטרונום מסונכרן'),
+                React.createElement('p', {
+                  key: 'subtitle',
+                  className: "text-purple-200"
+                }, 'סינכרון התחלה בלבד')
+              ]),
+
+              // Connection Status
+              React.createElement('div', {
+                key: 'connection-status',
+                className: "flex items-center justify-center gap-2 mb-6"
+              }, 
+                isConnected ? 
+                  React.createElement('div', {
+                    className: "flex items-center gap-2 bg-green-500/20 text-green-300 px-3 py-1 rounded-full"
+                  }, [
+                    React.createElement(Wifi, { key: 'wifi-icon', className: "w-4 h-4" }),
+                    React.createElement('span', {
+                      key: 'room-text',
+                      className: "text-sm"
+                    }, `חדר ${roomCode}`),
+                    isHost && React.createElement('span', {
+                      key: 'host-text',
+                      className: "text-xs"
+                    }, '(מנהיג)')
+                  ]) :
+                  React.createElement('div', {
+                    className: "flex items-center gap-2 bg-gray-500/20 text-gray-300 px-3 py-1 rounded-full"
+                  }, [
+                    React.createElement(WifiOff, { key: 'wifi-off-icon', className: "w-4 h-4" }),
+                    React.createElement('span', {
+                      key: 'solo-text',
+                      className: "text-sm"
+                    }, 'עצמאי')
+                  ])
+              ),
+
+              // Sync Countdown
+              syncCountdown > 0 && React.createElement('div', {
+                key: 'countdown',
+                className: "text-center mb-6"
+              }, [
+                React.createElement('div', {
+                  key: 'countdown-number',
+                  className: "text-6xl font-bold text-yellow-400 mb-2 animate-pulse"
+                }, syncCountdown),
+                React.createElement('div', {
+                  key: 'countdown-text',
+                  className: "text-yellow-200"
+                }, 'התחלה בעוד...')
+              ]),
+
+              // Room creation panel
+              !showRoomPanel && React.createElement('div', {
+                key: 'room-panel',
+                className: "mb-6 space-y-3"
+              }, [
+                React.createElement('button', {
+                  key: 'create-room',
+                  onClick: createRoom,
+                  className: "w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded-xl font-medium transition-all duration-200 flex items-center justify-center gap-2"
+                }, [
+                  React.createElement(Users, { key: 'users-icon', className: "w-4 h-4" }),
+                  'צור חדר לסינכרון'
+                ]),
+                
+                React.createElement('div', {
+                  key: 'join-room',
+                  className: "flex gap-2"
+                }, [
+                  React.createElement('input', {
+                    key: 'room-code-input',
+                    type: 'text',
+                    placeholder: 'קוד חדר',
+                    value: joinRoomCode,
+                    onChange: (e) => setJoinRoomCode(e.target.value.toUpperCase()),
+                    className: "flex-1 bg-white/10 text-white placeholder-purple-200 px-4 py-3 rounded-xl"
+                  }),
+                  React.createElement('button', {
+                    key: 'join-button',
+                    onClick: () => joinRoom(joinRoomCode),
+                    className: "bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-xl transition-all duration-200"
+                  }, 'הצטרף')
+                ])
+              ]),
+
+              // Connected room panel
+              showRoomPanel && isConnected && React.createElement('div', {
+                key: 'connected-panel',
+                className: "mb-6 bg-white/10 rounded-2xl p-4"
+              }, [
+                React.createElement('div', {
+                  key: 'room-header',
+                  className: "flex items-center justify-between mb-4"
+                }, [
+                  React.createElement('div', {
+                    key: 'room-info',
+                    className: "flex items-center gap-2"
+                  }, [
+                    React.createElement(Clock, { key: 'clock-icon', className: "w-4 h-4 text-purple-300" }),
+                    React.createElement('span', {
+                      key: 'room-name',
+                      className: "text-white font-medium"
+                    }, `חדר ${roomCode}`)
+                  ]),
+                  React.createElement('button', {
+                    key: 'copy-button',
+                    onClick: copyRoomCode,
+                    className: "text-purple-300 hover:text-white transition-colors",
+                    title: "העתק קוד"
+                  }, React.createElement(Copy, { className: "w-4 h-4" }))
+                ]),
+                
+                isHost ? React.createElement('div', {
+                  key: 'host-info',
+                  className: "space-y-2 mb-3"
+                }, [
+                  React.createElement('div', {
+                    key: 'host-status',
+                    className: "text-sm text-green-200"
+                  }, '✓ אתה מנהיג הלהקה'),
+                  React.createElement('div', {
+                    key: 'host-instructions',
+                    className: "text-xs text-purple-200"
+                  }, 'הגדר את הטמפו ולחץ התחל לסינכרון כולם')
+                ]) : React.createElement('div', {
+                  key: 'member-info',
+                  className: "space-y-2 mb-3"
+                }, [
+                  React.createElement('div', {
+                    key: 'member-status',
+                    className: "text-sm text-blue-200"
+                  }, 'מחכה למנהיג הלהקה'),
+                  React.createElement('div', {
+                    key: 'member-instructions',
+                    className: "text-xs text-purple-200"
+                  }, 'הטמפו יתעדכן אוטומטית מהמנהיג')
+                ]),
+                
+                React.createElement('button', {
+                  key: 'leave-room',
+                  onClick: leaveRoom,
+                  className: "w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg text-sm transition-all duration-200"
+                }, 'עזוב חדר')
+              ]),
+
+              // BPM Display
+              React.createElement('div', {
+                key: 'bpm-display',
+                className: "text-center mb-8"
+              }, [
+                React.createElement('div', {
+                  key: 'bpm-number',
+                  className: "text-6xl font-mono font-bold text-white mb-2"
+                }, currentSettings.bpm),
+                React.createElement('div', {
+                  key: 'bpm-label',
+                  className: "text-purple-200 text-lg"
+                }, [
+                  'BPM',
+                  isConnected && !isHost && React.createElement('span', {
+                    key: 'managed-label',
+                    className: "text-xs block text-purple-300"
+                  }, '(מנוהל על ידי המנהיג)')
+                ])
+              ]),
+
+              // BPM Controls - Only for host when connected or always when solo
+              (!isConnected || isHost) && React.createElement('div', {
+                key: 'bpm-controls',
+                className: "flex items-center justify-center gap-4 mb-8"
+              }, [
+                React.createElement('button', {
+                  key: 'bpm-minus',
+                  onClick: () => adjustBpm(-1),
+                  className: "bg-white/20 hover:bg-white/30 text-white rounded-full w-12 h-12 flex items-center justify-center text-xl font-bold transition-all duration-200"
+                }, '-'),
+                
+                React.createElement('input', {
+                  key: 'bpm-slider',
+                  type: 'range',
+                  min: '40',
+                  max: '300',
+                  value: currentSettings.bpm,
+                  onChange: (e) => {
+                    const newBpm = parseInt(e.target.value);
+                    setBpm(newBpm);
+                    if (isHost && isConnected) {
+                      setSharedSettings(prev => ({ ...prev, bpm: newBpm }));
+                    }
+                  },
+                  className: "flex-1 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                }),
+                
+                React.createElement('button', {
+                  key: 'bpm-plus',
+                  onClick: () => adjustBpm(1),
+                  className: "bg-white/20 hover:bg-white/30 text-white rounded-full w-12 h-12 flex items-center justify-center text-xl font-bold transition-all duration-200"
+                }, '+')
+              ]),
+
+              // Beat Indicator
+              React.createElement('div', {
+                key: 'beat-indicator',
+                className: "flex justify-center gap-2 mb-8"
+              }, 
+                Array.from({ length: currentSettings.timeSignature.beats }).map((_, i) => 
+                  React.createElement('div', {
+                    key: `beat-${i}`,
+                    className: `w-4 h-4 rounded-full transition-all duration-100 ${
+                      currentBeat === i + 1
+                        ? accentFirst && i === 0
+                          ? 'bg-yellow-400 shadow-lg shadow-yellow-400/50 scale-125'
+                          : 'bg-purple-400 shadow-lg shadow-purple-400/50 scale-125'
+                        : 'bg-white/20'
+                    }`
+                  })
+                )
+              ),
+
+              // Play/Pause Button
+              React.createElement('div', {
+                key: 'play-button-container',
+                className: "flex justify-center mb-8"
+              }, 
+                React.createElement('button', {
+                  onClick: handlePlayPause,
+                  disabled: isConnected && !isHost && !isWaitingForStart,
+                  className: `w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200 ${
+                    isConnected && !isHost && !isWaitingForStart
+                      ? 'bg-gray-500 cursor-not-allowed opacity-50'
+                      : (isPlaying || isWaitingForStart)
+                      ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/30'
+                      : 'bg-green-500 hover:bg-green-600 shadow-lg shadow-green-500/30'
+                  } ${(isWaitingForStart || syncCountdown > 0) ? 'animate-pulse' : ''}`
+                }, 
+                  isPlaying || isWaitingForStart ? 
+                    React.createElement(Pause, { className: "w-8 h-8 text-white" }) :
+                    React.createElement(Play, { className: "w-8 h-8 text-white ml-1" })
+                )
+              ),
+
+              // Status message for non-host
+              isConnected && !isHost && !isWaitingForStart && React.createElement('div', {
+                key: 'status-message',
+                className: "text-center text-purple-200 text-sm mb-4"
+              }, 'המתן למנהיג הלהקה להתחיל'),
+
+              // Settings toggle
+              (!isConnected || isHost) && React.createElement('div', {
+                key: 'settings-toggle',
+                className: "flex justify-center mb-4"
+              }, 
+                React.createElement('button', {
+                  onClick: () => setShowSettings(!showSettings),
+                  className: "flex items-center gap-2 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg transition-all duration-200"
+                }, [
+                  React.createElement(Settings, { key: 'settings-icon', className: "w-4 h-4" }),
+                  'הגדרות'
+                ])
+              ),
+
+              // Instructions
+              React.createElement('div', {
+                key: 'instructions',
+                className: "text-center text-purple-200 text-sm mt-6"
+              }, 
+                isConnected ? 
+                  React.createElement('div', {
+                    className: "space-y-1"
+                  }, [
+                    React.createElement('p', { key: 'sync-title' }, React.createElement('strong', {}, 'מצב מסונכרן:')),
+                    isHost ? 
+                      React.createElement('p', { key: 'host-instruction' }, 'לחץ התחל וכל המוזיקאים יקבלו ספירה לאחור') :
+                      React.createElement('p', { key: 'member-instruction' }, 'המטרונום יתחיל אוטומטית עם כולם'),
+                    React.createElement('p', {
+                      key: 'sync-note',
+                      className: "text-xs text-purple-300 mt-2"
+                    }, '⚡ סינכרון חד-פעמי - לא תלוי ברשת במהלך הנגינה')
+                  ]) :
+                  React.createElement('div', {
+                    className: "space-y-1"
+                  }, [
+                    React.createElement('p', { key: 'solo-instruction1' }, 'צור חדר לסינכרון עם מוזיקאים אחרים'),
+                    React.createElement('p', { key: 'solo-instruction2' }, 'או השתמש במצב עצמאי')
+                  ])
+              )
+            ])
+          );
+        };
+
+        // Render the app
+        ReactDOM.render(React.createElement(SyncStartMetronome), document.getElementById('root'));
+    </script>
+    
+    <!-- Register service worker for PWA -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('sw.js')
+                    .then(function(registration) {
+                        console.log('SW registered: ', registration);
+                    }, function(registrationError) {
+                        console.log('SW registration failed: ', registrationError);
+                    });
+            });
+        }
+    </script>
 </body>
 </html>
